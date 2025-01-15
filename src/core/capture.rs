@@ -1,64 +1,70 @@
-use std::{
-    mem::size_of,
-    ptr, slice,
-    sync::{Arc, Condvar, Mutex},
-};
+#[cfg(target_family = "windows")]
+pub mod windows {
+    use anyhow::Result;
+    use std::{
+        ptr, slice,
+        sync::{Arc, Condvar, Mutex},
+    };
 
-use windows::{
-    core::{implement, IUnknown, Interface, HRESULT, PCSTR, PROPVARIANT},
-    Win32::{
-        Foundation::WAIT_OBJECT_0,
-        Media::{
-            Audio::{
-                ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
-                IActivateAudioInterfaceCompletionHandler,
-                IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
-                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
-                AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-                AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
-                PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-                WAVEFORMATEXTENSIBLE_0,
+    use windows::{
+        core::{implement, IUnknown, Interface, HRESULT, PCSTR, PROPVARIANT},
+        Win32::{
+            Foundation::WAIT_OBJECT_0,
+            Media::{
+                Audio::{
+                    ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+                    IActivateAudioInterfaceCompletionHandler,
+                    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
+                    IAudioClient, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK, AUDIOCLIENT_ACTIVATION_PARAMS,
+                    AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+                    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
+                    VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+                    WAVEFORMATEXTENSIBLE_0,
+                },
+                KernelStreaming::WAVE_FORMAT_EXTENSIBLE,
+                Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
             },
-            KernelStreaming::WAVE_FORMAT_EXTENSIBLE,
-            Multimedia::KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
+            System::{
+                Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
+                Threading::{CreateEventA, WaitForSingleObject},
+                Variant::VT_BLOB,
+            },
         },
-        System::{
-            Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
-            Threading::{CreateEventA, WaitForSingleObject},
-            Variant::VT_BLOB,
-        },
-    },
-};
+    };
 
-#[implement(IActivateAudioInterfaceCompletionHandler)]
-struct Handler(Arc<(Mutex<bool>, Condvar)>);
+    #[implement(IActivateAudioInterfaceCompletionHandler)]
+    struct Handler(Arc<(Mutex<bool>, Condvar)>);
 
-impl Handler {
-    pub fn new(object: Arc<(Mutex<bool>, Condvar)>) -> Handler {
-        Handler(object)
+    impl Handler {
+        pub fn new(object: Arc<(Mutex<bool>, Condvar)>) -> Handler {
+            Handler(object)
+        }
     }
-}
 
-impl IActivateAudioInterfaceCompletionHandler_Impl for Handler {
-    fn ActivateCompleted(
-        &self,
-        _activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
-    ) -> windows::core::Result<()> {
-        let (lock, cvar) = &*self.0;
-        let mut completed = lock.lock().unwrap();
-        *completed = true;
-        drop(completed);
-        cvar.notify_one();
-        Ok(())
+    impl IActivateAudioInterfaceCompletionHandler_Impl for Handler {
+        fn ActivateCompleted(
+            &self,
+            _activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
+        ) -> windows::core::Result<()> {
+            let (lock, cvar) = &*self.0;
+            let mut completed = lock.lock().unwrap();
+            *completed = true;
+            drop(completed);
+            cvar.notify_one();
+            Ok(())
+        }
     }
-}
 
-fn main() -> windows::core::Result<()> {
-    let process_id = 36000;
+    pub unsafe fn capture_audio_for_process(
+        process_id: u32,
+        callback: impl Fn(&[i32]) -> (),
+    ) -> Result<()> {
+        let n_channels = 1;
+        let bits_per_sample = 32;
+        let sample_rate = 44100;
 
-    unsafe {
         // Initialize COM
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
 
@@ -96,14 +102,15 @@ fn main() -> windows::core::Result<()> {
 
         // Create completion handler
         let setup = Arc::new((Mutex::new(false), Condvar::new()));
-        let callback: IActivateAudioInterfaceCompletionHandler = Handler::new(setup.clone()).into();
+        let completion_callback: IActivateAudioInterfaceCompletionHandler =
+            Handler::new(setup.clone()).into();
 
         // Activate audio interface
         let operation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &riid,
             activation_params,
-            &callback,
+            &completion_callback,
         )?;
 
         // Wait for completion
@@ -124,17 +131,17 @@ fn main() -> windows::core::Result<()> {
         let audio_client: IAudioClient = audio_client.unwrap().cast()?;
 
         // Audio client arguments
-        let block_align = 2 * 32 / 8;
-        let byte_rate = 44100 * block_align;
+        let block_align = n_channels * bits_per_sample / 8;
+        let byte_rate = sample_rate * block_align;
 
         let extensible = WAVEFORMATEXTENSIBLE {
             Format: WAVEFORMATEX {
                 wFormatTag: WAVE_FORMAT_EXTENSIBLE as u16,
-                nChannels: 2,
-                nSamplesPerSec: 44100,
+                nChannels: 1,
+                nSamplesPerSec: sample_rate,
                 nAvgBytesPerSec: byte_rate,
                 nBlockAlign: block_align as u16,
-                wBitsPerSample: 32,
+                wBitsPerSample: bits_per_sample as u16,
                 cbSize: (size_of::<WAVEFORMATEXTENSIBLE>() - size_of::<WAVEFORMATEX>()) as u16,
             },
             Samples: WAVEFORMATEXTENSIBLE_0 {
@@ -164,9 +171,6 @@ fn main() -> windows::core::Result<()> {
         audio_client.SetEventHandle(h_event)?;
         audio_client.Start()?;
 
-        println!("Starting main loop");
-
-        // Main loop
         loop {
             let frames_available = capture_client.GetNextPacketSize()?;
             if frames_available < 1 {
@@ -189,17 +193,18 @@ fn main() -> windows::core::Result<()> {
             let len_in_bytes = nbr_frames_returned as usize * block_align as usize;
             let bufferslice = slice::from_raw_parts(buffer_ptr, len_in_bytes);
 
-            // Look for a non silent sample
-            let mut non_zero = false;
-            for element in bufferslice.iter() {
-                if *element != 0 {
-                    non_zero = true;
-                }
+            // bytes are little endian
+            let mut audio_data = Vec::with_capacity(bufferslice.len() / block_align as usize);
+            for i in (0..bufferslice.len()).step_by(4) {
+                let sample = i32::from_le_bytes([
+                    bufferslice[i],
+                    bufferslice[i + 1],
+                    bufferslice[i + 2],
+                    bufferslice[i + 3],
+                ]);
+                audio_data.push(sample);
             }
-
-            if non_zero {
-                println!("Non-zero sample found");
-            }
+            callback(&audio_data);
 
             // Release buffer
             if nbr_frames_returned > 0 {
@@ -211,6 +216,11 @@ fn main() -> windows::core::Result<()> {
             if retval.0 != WAIT_OBJECT_0.0 {
                 panic!("AHHHHH");
             }
+
+            // we can sleep for about 10ms
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
+
+        Ok(())
     }
 }

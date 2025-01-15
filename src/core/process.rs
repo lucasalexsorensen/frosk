@@ -1,5 +1,5 @@
 #[cfg(target_family="windows")]
-mod windows {
+pub mod windows {
     use std::sync::{Arc, Mutex};
     use thiserror::Error;
     use windows::Win32::{
@@ -9,9 +9,9 @@ mod windows {
     
     #[derive(Debug, Clone)]
     pub struct WindowInfo {
-        window: HWND,
-        text: String,
-        process_id: u32,
+        pub window: HWND,
+        pub title: String,
+        pub process_id: u32,
     }
     
     #[derive(Debug, Error)]
@@ -22,7 +22,7 @@ mod windows {
         GameNotFound,
     }
     
-    fn get_window_info() -> Result<WindowInfo, GetWindowError> {
+    pub fn get_window_info(title: &str) -> Result<WindowInfo, GetWindowError> {
         let window_infos = Arc::new(Mutex::new(Vec::<WindowInfo>::new()));
     
         let window_infos_clone = Arc::clone(&window_infos);
@@ -37,19 +37,19 @@ mod windows {
         let infos = window_infos.lock().unwrap();
         let window = infos
             .iter()
-            .filter(|i| i.text == "World of Warcraft")
+            .filter(|i| i.title == title)
             .next()
             .ok_or(GetWindowError::GameNotFound)?;
     
         Ok(window.clone())
     }
     
-    extern "system" fn enum_callback(window: HWND, lparam: LPARAM) -> BOOL {
+    pub extern "system" fn enum_callback(window: HWND, lparam: LPARAM) -> BOOL {
         unsafe {
-            // get window text
-            let mut text: [u16; 512] = [0; 512];
-            let len = GetWindowTextW(window, &mut text);
-            let text = String::from_utf16_lossy(&text[..len as usize]);
+            // get window title
+            let mut raw_title: [u16; 512] = [0; 512];
+            let len = GetWindowTextW(window, &mut raw_title);
+            let title = String::from_utf16_lossy(&raw_title[..len as usize]);
     
             // get process ID
             let mut process_id: u32 = 0;
@@ -64,7 +64,7 @@ mod windows {
             let mut vec = window_infos.lock().unwrap();
             let info = WindowInfo {
                 window,
-                text,
+                title,
                 process_id,
             };
             vec.push(info);
@@ -72,8 +72,4 @@ mod windows {
             true.into()
         }
     }
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
 }
