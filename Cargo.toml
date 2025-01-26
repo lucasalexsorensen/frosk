@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 anyhow = "1.0.95"
 cpal = "0.15.3"
+eframe = "0.30.0"
+egui_plot = "0.30.0"
 hound = "3.5.1"
-plotters = "0.3.7"
+itertools = "0.14.0"
 rand = "0.8.5"
-rustfft = "6.2.0"
+ringbuf = "0.4.7"
 thiserror = "2.0.11"
 
 [target.'cfg(windows)'.dependencies.windows]
@@ -24,8 +27,13 @@ features = [
     "Win32_Security",
     "Win32_Media_KernelStreaming",
     "Win32_System_Variant",
-    "Win32_UI_WindowsAndMessaging"
+    "Win32_UI_WindowsAndMessaging",
 ]
 
 [target.'cfg(windows)'.dependencies.windows-core]
 version = "0.54.0"
+
+
+[[bench]]
+name = "signal_bench"
+harness = false
