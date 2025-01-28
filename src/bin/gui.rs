@@ -1,4 +1,5 @@
 use anyhow::Result;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -8,7 +9,7 @@ use std::{
 use eframe::egui::{self, Color32};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
-const RETENTION: usize = 3000;
+const RETENTION: usize = 8000;
 
 fn main() -> Result<()> {
     let options = eframe::NativeOptions {
@@ -20,44 +21,58 @@ fn main() -> Result<()> {
         .samples::<i32>()
         .map(|s| s.unwrap() as f32 / i32::MAX as f32)
         .collect();
-
     let target_norm: f32 = target.iter().map(|x| x.powi(2)).sum::<f32>();
-
     let mut buffer: VecDeque<f32> = VecDeque::from(vec![0.0; target.len()]);
-
     let correlations: Arc<Mutex<VecDeque<f32>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![0.0; RETENTION])));
-
     let correlations_clone = Arc::clone(&correlations);
 
-    let haystack: Vec<f32> = hound::WavReader::open("sounds/UndercityExample.wav")?
-        .samples::<i32>()
-        .map(|s| s.unwrap() as f32 / i32::MAX as f32)
-        .collect();
+    let host = cpal::default_host();
 
-    println!("target len: {}, haystack len: {}", target.len(), haystack.len());
-    let capture_thread = thread::spawn(move || {
-        for chunk in haystack.chunks(25) {
-            chunk.iter().for_each(|value| {
-                // pop one, push one, compute correlation (i.e. dot product of target and buffer)
-                buffer.pop_front();
-                buffer.push_back(*value);
-            });
-            // compute correlation
-            let correlation = buffer
-                .iter()
-                .zip(target.iter())
-                .map(|(a, b)| a * b)
-                .sum::<f32>() / target_norm;
-            {
-                let mut correlations = correlations_clone.lock().unwrap();
-                correlations.pop_front();
-                correlations.push_back(correlation);
+    let loopback_device = host
+        .input_devices()?
+        .find(|d| d.name().unwrap().contains("BlackHole 2ch"))
+        .unwrap();
+    //let config = loopback_device.default_input_config().expect("no default input config!");
+    let config = cpal::StreamConfig {
+        channels: 1,
+        sample_rate: cpal::SampleRate(44100),
+        buffer_size: cpal::BufferSize::Fixed(440),
+    };
+
+    let stream = loopback_device.build_input_stream(
+        &config.into(),
+        move |big_chunk: &[f32], _: &_| {
+            for chunk in big_chunk.chunks(5) {
+                chunk.iter().for_each(|value| {
+                    // pop one, push one, compute correlation (i.e. dot product of target and buffer)
+                    buffer.pop_front();
+                    buffer.push_back(*value);
+                });
+
+                let correlation = buffer
+                    .iter()
+                    .zip(target.iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>()
+                    / target_norm;
+
+                // for toy purposes, just take the absmax of chunk
+                // let correlation: f32 = chunk.iter().fold(0.0, |acc, x| acc.max(x.abs()));
+                {
+                    let mut correlations = correlations_clone.lock().unwrap();
+                    correlations.pop_front();
+                    correlations.push_back(correlation);
+                }
             }
-            // sleep 0.5ms
-            thread::sleep(std::time::Duration::from_micros(100));
-        }
-    });
+        },
+        move |err| {
+            eprintln!("an error occurred on stream: {}", err);
+        },
+        None,
+    )?;
+
+    stream.play()?;
 
     let correlations_clone2 = Arc::clone(&correlations);
     eframe::run_native(
@@ -66,8 +81,6 @@ fn main() -> Result<()> {
         Box::new(|_cc| Ok(Box::new(MyApp::new(correlations_clone2)))),
     )
     .unwrap();
-
-    capture_thread.join().unwrap();
 
     Ok(())
 }
@@ -101,7 +114,7 @@ impl eframe::App for MyApp {
                 .allow_boxed_zoom(false)
                 .show_x(false)
                 .show_y(false)
-                .show_axes(egui::Vec2b::new(false, true))
+                .show_axes(egui::Vec2b::new(false, false))
                 .auto_bounds(egui::Vec2b::new(true, true))
                 .include_x(0.0)
                 .include_x(RETENTION as f32)
@@ -124,7 +137,6 @@ impl eframe::App for MyApp {
         });
     }
 }
-
 
 #[cfg(test)]
 mod tests {

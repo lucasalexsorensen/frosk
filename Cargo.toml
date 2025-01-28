@@ -32,8 +32,3 @@ features = [
 
 [target.'cfg(windows)'.dependencies.windows-core]
 version = "0.54.0"
-
-
-[[bench]]
-name = "signal_bench"
-harness = false
