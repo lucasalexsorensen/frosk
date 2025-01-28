@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 pub trait AudioCapture {
-    unsafe fn capture_audio_for_process(process_id: u32, callback: impl Fn(&[i32]) -> ()) -> Result<()>;
+    unsafe fn capture_audio_for_process(process_id: u32, callback: impl Fn(&[i32])) -> Result<()>;
 }
 
 
@@ -250,7 +250,7 @@ pub mod macos {
     impl AudioCapture for MacOsCapturer {
         unsafe fn capture_audio_for_process(
             process_id: u32,
-            callback: impl Fn(&[i32]) -> (),
+            callback: impl Fn(&[i32]),
         ) -> Result<()> {
             let reader = hound::WavReader::open("sounds/Sine.wav").unwrap();
             for chunk_iterable in &reader.into_samples::<i32>().chunks(440) {

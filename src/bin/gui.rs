@@ -3,7 +3,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
-    thread,
 };
 
 use eframe::egui::{self, Color32};
@@ -41,7 +40,7 @@ fn main() -> Result<()> {
     };
 
     let stream = loopback_device.build_input_stream(
-        &config.into(),
+        &config,
         move |big_chunk: &[f32], _: &_| {
             for chunk in big_chunk.chunks(5) {
                 chunk.iter().for_each(|value| {
