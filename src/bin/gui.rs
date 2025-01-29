@@ -12,7 +12,7 @@ const RETENTION: usize = 8000;
 
 fn main() -> Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([350.0, 200.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([650.0, 300.0]),
         ..Default::default()
     };
 
@@ -24,7 +24,11 @@ fn main() -> Result<()> {
     let mut buffer: VecDeque<f32> = VecDeque::from(vec![0.0; target.len()]);
     let correlations: Arc<Mutex<VecDeque<f32>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![0.0; RETENTION])));
+
+    
     let correlations_clone = Arc::clone(&correlations);
+    let events: Arc<Mutex<Vec<FroskEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
 
     let host = cpal::default_host();
 
@@ -32,7 +36,6 @@ fn main() -> Result<()> {
         .input_devices()?
         .find(|d| d.name().unwrap().contains("BlackHole 2ch"))
         .unwrap();
-    //let config = loopback_device.default_input_config().expect("no default input config!");
     let config = cpal::StreamConfig {
         channels: 1,
         sample_rate: cpal::SampleRate(44100),
@@ -56,8 +59,11 @@ fn main() -> Result<()> {
                     .sum::<f32>()
                     / target_norm;
 
-                // for toy purposes, just take the absmax of chunk
-                // let correlation: f32 = chunk.iter().fold(0.0, |acc, x| acc.max(x.abs()));
+                if correlation > 0.75 {
+                    let mut events = events_clone.lock().unwrap();
+                    events.push(FroskEvent::FishBite { score: correlation });
+                }
+
                 {
                     let mut correlations = correlations_clone.lock().unwrap();
                     correlations.pop_front();
@@ -73,25 +79,34 @@ fn main() -> Result<()> {
 
     stream.play()?;
 
+    let events_clone2 = Arc::clone(&events);
     let correlations_clone2 = Arc::clone(&correlations);
+
     eframe::run_native(
         "frosk",
         options,
-        Box::new(|_cc| Ok(Box::new(MyApp::new(correlations_clone2)))),
+        Box::new(|_cc| Ok(Box::new(MyApp::new(events_clone2, correlations_clone2)))),
     )
     .unwrap();
 
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum FroskEvent {
+    FishBite { score: f32 }
+}
+
 struct MyApp {
+    events: Arc<Mutex<Vec<FroskEvent>>>,
     correlations: Arc<Mutex<VecDeque<f32>>>,
     time: u32,
 }
 
 impl MyApp {
-    fn new(correlations: Arc<Mutex<VecDeque<f32>>>) -> Self {
+    fn new(events: Arc<Mutex<Vec<FroskEvent>>>, correlations: Arc<Mutex<VecDeque<f32>>>) -> Self {
         Self {
+            events,
             correlations,
             time: 0,
         }
@@ -100,7 +115,29 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let mut plot_rect = None;
+
+        egui::SidePanel::left("events").exact_width(150.0).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Events");
+            });
+
+            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |scroll_ui| {
+                scroll_ui.spacing_mut().item_spacing.y = 4.0;
+                scroll_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+
+                {
+                    let events = self.events.lock().unwrap();
+                    events.iter().rev().for_each(|event| {
+                        match event {
+                            FroskEvent::FishBite { score } => {
+                                scroll_ui.label(format!("FishBite ({:.3})", score));
+                            }
+                        }
+                    });
+                }
+            })
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.ctx().request_repaint();
             self.time += 1;
@@ -125,15 +162,22 @@ impl eframe::App for MyApp {
                 let correlations = self.correlations.lock().unwrap();
                 let (slice1, slice2) = correlations.as_slices();
                 let combined: Vec<f32> = slice1.iter().chain(slice2.iter()).cloned().collect();
-                let inner = my_plot.show(ui, |plot_ui| {
+                my_plot.show(ui, |plot_ui| {
                     let wave = Line::new(PlotPoints::from_ys_f32(&combined))
                         .color(Color32::from_rgb(200, 100, 100))
                         .style(egui_plot::LineStyle::Solid);
                     plot_ui.line(wave);
                 });
-                plot_rect = Some(inner.response.rect);
+
+                // if lates correlation is above threshold, add event
+                // if let Some(last) = correlations.back() {
+                // if self.time % 100 == 0 {
+                //     println!("FishBite detected at time {}", self.time);
+                //     self.events.push(FroskEvent::FishBite { score: correlations.back().unwrap().clone() });
+                // }
             }
         });
+
     }
 }
 
