@@ -4,15 +4,42 @@ use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
+use ringbuf::{traits::*, StaticRb};
 
 use eframe::egui::{self, Color32};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 
 const RETENTION: usize = 8000;
 
+const TARGET_BYTES: &[u8] = include_bytes!("../../sounds/FishBite.wav");
+const fn target_sample_count() -> u32 {
+    let data = TARGET_BYTES;
+    let num_channels = u16::from_le_bytes([data[22], data[23]]);
+    let bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
+    let mut offset = 12;
+    while offset + 8 < data.len() {
+        let chunk_id = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
+        let chunk_size = u32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+        match chunk_id {
+            [b'd', b'a', b't', b'a'] => {
+                let data_chunk_size = chunk_size;
+                let bytes_per_sample = (bits_per_sample / 8) as u32;
+                return data_chunk_size / (num_channels as u32 * bytes_per_sample);
+            },
+            _ => {}
+        }
+
+        offset += 8 + chunk_size as usize; // Move to next chunk
+    }
+
+    return 0;
+}
+
+const TARGET_SAMPLE_COUNT: usize = target_sample_count() as usize;
+
 fn main() -> Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([650.0, 300.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([650.0, 300.0]).with_always_on_top().with_position((0.0, 0.0)),
         ..Default::default()
     };
 
@@ -21,7 +48,13 @@ fn main() -> Result<()> {
         .map(|s| s.unwrap() as f32 / i32::MAX as f32)
         .collect();
     let target_norm: f32 = target.iter().map(|x| x.powi(2)).sum::<f32>();
-    let mut buffer: VecDeque<f32> = VecDeque::from(vec![0.0; target.len()]);
+
+    let ringbuffer = StaticRb::<f32, TARGET_SAMPLE_COUNT>::default();
+    let (mut rb_prod, mut rb_cons) = ringbuffer.split();
+    for _ in 0..TARGET_SAMPLE_COUNT {
+        rb_prod.try_push(0.0).unwrap();
+    }
+
     let correlations: Arc<Mutex<VecDeque<f32>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![0.0; RETENTION])));
 
@@ -45,14 +78,11 @@ fn main() -> Result<()> {
     let stream = loopback_device.build_input_stream(
         &config,
         move |big_chunk: &[f32], _: &_| {
-            for chunk in big_chunk.chunks(5) {
-                chunk.iter().for_each(|value| {
-                    // pop one, push one, compute correlation (i.e. dot product of target and buffer)
-                    buffer.pop_front();
-                    buffer.push_back(*value);
-                });
+            for chunk in big_chunk.chunks(10) {
+                rb_cons.skip(chunk.len());
+                rb_prod.push_slice(chunk);
 
-                let correlation = buffer
+                let correlation = rb_cons
                     .iter()
                     .zip(target.iter())
                     .map(|(a, b)| a * b)
@@ -115,9 +145,8 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-
-        egui::SidePanel::left("events").exact_width(150.0).show(ctx, |ui| {
-            ui.horizontal(|ui| {
+        egui::SidePanel::left("events").exact_width(150.0).resizable(false).show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
                 ui.heading("Events");
             });
 
@@ -168,13 +197,6 @@ impl eframe::App for MyApp {
                         .style(egui_plot::LineStyle::Solid);
                     plot_ui.line(wave);
                 });
-
-                // if lates correlation is above threshold, add event
-                // if let Some(last) = correlations.back() {
-                // if self.time % 100 == 0 {
-                //     println!("FishBite detected at time {}", self.time);
-                //     self.events.push(FroskEvent::FishBite { score: correlations.back().unwrap().clone() });
-                // }
             }
         });
 
@@ -200,5 +222,28 @@ mod tests {
         for i in 0..20 {
             assert_eq!(combined[i], (i + 11) as f32);
         }
+    }
+
+    #[test]
+    fn test_rb_slice() {
+        let rb = StaticRb::<f32, 20>::default();
+        let (mut prod, mut cons) = rb.split();
+        for _ in 0..20 {
+            prod.try_push(0.0).unwrap();
+        }
+
+        let source: Vec<f32> = (1..=30).map(|x| x as f32).collect();
+        for chunk in source.chunks(5) {
+            cons.skip(chunk.len());
+            prod.push_slice(chunk);
+        }
+
+        let (slice1, slice2) = cons.as_slices();
+        let combined: Vec<f32> = slice1.iter().chain(slice2.iter()).cloned().collect();
+        assert_eq!(combined.len(), 20);
+        for i in 0..20 {
+            assert_eq!(combined[i], (i + 11) as f32);
+        }
+        
     }
 }
