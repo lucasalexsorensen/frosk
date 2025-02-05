@@ -1,9 +1,26 @@
 use anyhow::Result;
 
 pub trait AudioCapture {
-    unsafe fn capture_audio_for_process(process_id: u32, callback: impl Fn(&[i32])) -> Result<()>;
+    unsafe fn capture_game_audio(
+        &self,
+        callback: impl FnMut(&[f32]) + Send + 'static,
+    ) -> Result<()>;
 }
 
+pub fn default_audio_capture() -> impl AudioCapture {
+    #[cfg(target_os = "windows")]
+    {
+        windows::WindowsCapturer::default()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::MacOsCapturer::default()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        panic!("Unsupported OS");
+    }
+}
 
 #[cfg(target_os = "windows")]
 pub mod windows {
@@ -69,17 +86,17 @@ pub mod windows {
     struct WindowsCapturer {}
 
     impl AudioCapture for WindowsCapturer {
-        unsafe fn capture_audio_for_process(
-            process_id: u32,
-            callback: impl Fn(&[i32]) -> (),
+        unsafe fn capture_game_audio(
+            &self,
+            mut callback: impl FnMut(&[f32]) -> (),
         ) -> Result<()> {
             let n_channels = 1;
             let bits_per_sample = 32;
             let sample_rate = 44100;
-    
+
             // Initialize COM
             CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
-    
+
             // Create audio client
             let audio_client_activation_params = AUDIOCLIENT_ACTIVATION_PARAMS {
                 ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
@@ -90,7 +107,7 @@ pub mod windows {
                     },
                 },
             };
-    
+
             let raw_prop = windows_core::imp::PROPVARIANT {
                 Anonymous: windows_core::imp::PROPVARIANT_0 {
                     Anonymous: windows_core::imp::PROPVARIANT_0_0 {
@@ -107,16 +124,16 @@ pub mod windows {
                     },
                 },
             };
-    
+
             let activation_prop = PROPVARIANT::from_raw(raw_prop);
             let activation_params = Some(&activation_prop as *const _);
             let riid = IAudioClient::IID;
-    
+
             // Create completion handler
             let setup = Arc::new((Mutex::new(false), Condvar::new()));
             let completion_callback: IActivateAudioInterfaceCompletionHandler =
                 Handler::new(setup.clone()).into();
-    
+
             // Activate audio interface
             let operation = ActivateAudioInterfaceAsync(
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
@@ -124,7 +141,7 @@ pub mod windows {
                 activation_params,
                 &completion_callback,
             )?;
-    
+
             // Wait for completion
             let (lock, cvar) = &*setup;
             let mut completed = lock.lock().unwrap();
@@ -132,20 +149,20 @@ pub mod windows {
                 completed = cvar.wait(completed).unwrap();
             }
             drop(completed);
-    
+
             // Get audio client and result
             let mut audio_client: Option<IUnknown> = Default::default();
             let mut result: HRESULT = Default::default();
             operation.GetActivateResult(&mut result, &mut audio_client)?;
-    
+
             // Ensure successful activation
             result.ok()?;
             let audio_client: IAudioClient = audio_client.unwrap().cast()?;
-    
+
             // Audio client arguments
             let block_align = n_channels * bits_per_sample / 8;
             let byte_rate = sample_rate * block_align;
-    
+
             let extensible = WAVEFORMATEXTENSIBLE {
                 Format: WAVEFORMATEX {
                     wFormatTag: WAVE_FORMAT_EXTENSIBLE as u16,
@@ -162,9 +179,9 @@ pub mod windows {
                 SubFormat: KSDATAFORMAT_SUBTYPE_IEEE_FLOAT,
                 dwChannelMask: 0x1 | 0x2,
             };
-    
+
             let stream_flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_LOOPBACK;
-    
+
             // Initialise audio client
             audio_client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
@@ -174,21 +191,21 @@ pub mod windows {
                 &extensible.Format,
                 None,
             )?;
-    
+
             // Get capture client
             let capture_client = audio_client.GetService::<IAudioCaptureClient>()?;
-    
+
             // Set event handle
             let h_event = CreateEventA(None, false, false, PCSTR::null())?;
             audio_client.SetEventHandle(h_event)?;
             audio_client.Start()?;
-    
+
             loop {
                 let frames_available = capture_client.GetNextPacketSize()?;
                 if frames_available < 1 {
                     continue;
                 }
-    
+
                 // Get pointer to buffer
                 let mut buffer_ptr = ptr::null_mut();
                 let mut nbr_frames_returned = 0;
@@ -200,15 +217,15 @@ pub mod windows {
                     None,
                     None,
                 )?;
-    
+
                 // Fill buffer
                 let len_in_bytes = nbr_frames_returned as usize * block_align as usize;
                 let bufferslice = slice::from_raw_parts(buffer_ptr, len_in_bytes);
-    
+
                 // bytes are little endian
                 let mut audio_data = Vec::with_capacity(bufferslice.len() / block_align as usize);
                 for i in (0..bufferslice.len()).step_by(4) {
-                    let sample = i32::from_le_bytes([
+                    let sample = f32::from_le_bytes([
                         bufferslice[i],
                         bufferslice[i + 1],
                         bufferslice[i + 2],
@@ -217,47 +234,65 @@ pub mod windows {
                     audio_data.push(sample);
                 }
                 callback(&audio_data);
-    
+
                 // Release buffer
                 if nbr_frames_returned > 0 {
                     capture_client.ReleaseBuffer(nbr_frames_returned).unwrap();
                 }
-    
+
                 // Read from device to queue
                 let retval = WaitForSingleObject(h_event, 100000);
                 if retval.0 != WAIT_OBJECT_0.0 {
                     panic!("AHHHHH");
                 }
-    
+
                 // we can sleep for about 10ms
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-    
+
             Ok(())
         }
     }
-
 }
 
 #[cfg(target_os = "macos")]
 pub mod macos {
-    use anyhow::Result;
-    use itertools::Itertools;
     use super::AudioCapture;
+    use anyhow::Result;
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+    #[derive(Default)]
     pub struct MacOsCapturer {}
 
     impl AudioCapture for MacOsCapturer {
-        unsafe fn capture_audio_for_process(
-            process_id: u32,
-            callback: impl Fn(&[i32]),
+        unsafe fn capture_game_audio(
+            &self,
+            mut callback: impl FnMut(&[f32]) + Send + 'static,
         ) -> Result<()> {
-            let reader = hound::WavReader::open("sounds/Sine.wav").unwrap();
-            for chunk_iterable in &reader.into_samples::<i32>().chunks(440) {
-                let chunk: Vec<_> = chunk_iterable.map(|sample| sample.unwrap()).collect();
-                callback(&chunk);
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            let host = cpal::default_host();
+            let loopback_device = host
+                .input_devices()?
+                .find(|d| d.name().unwrap().contains("BlackHole 2ch"))
+                .unwrap();
+            let config = cpal::StreamConfig {
+                channels: 1,
+                sample_rate: cpal::SampleRate(44100),
+                buffer_size: cpal::BufferSize::Fixed(440),
+            };
+
+            let stream = loopback_device.build_input_stream(
+                &config,
+                move |chunk: &[f32], _: &_| {
+                    callback(chunk);
+                },
+                move |err| {
+                    eprintln!("an error occurred on stream: {}", err);
+                },
+                None,
+            )?;
+
+            stream.play()?;
+
             Ok(())
         }
     }

@@ -1,3 +1,4 @@
 pub mod process;
 pub mod capture;
-// pub mod signal;
+pub mod event;
+pub mod dsp;

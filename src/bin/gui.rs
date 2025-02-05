@@ -1,7 +1,5 @@
 use anyhow::Result;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use enigo::{Direction::Click, Key, Keyboard};
-use ringbuf::{traits::*, StaticRb};
+
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -10,65 +8,12 @@ use std::{
 
 use eframe::egui::{self, Color32};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
+use frosk::core::{
+    capture::{default_audio_capture, AudioCapture}, dsp::SignalProcessor, event::{handle_event, FroskEvent}
+};
+
 
 const RETENTION: usize = 8000;
-
-const TARGET_BYTES: &[u8] = include_bytes!("../../sounds/FishBite.wav");
-const fn target_sample_count() -> u32 {
-    let data = TARGET_BYTES;
-    let num_channels = u16::from_le_bytes([data[22], data[23]]);
-    let bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
-    let mut offset = 12;
-    while offset + 8 < data.len() {
-        let chunk_id = [
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ];
-        let chunk_size = u32::from_le_bytes([
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ]);
-        match chunk_id {
-            [b'd', b'a', b't', b'a'] => {
-                let data_chunk_size = chunk_size;
-                let bytes_per_sample = (bits_per_sample / 8) as u32;
-                return data_chunk_size / (num_channels as u32 * bytes_per_sample);
-            }
-            _ => {}
-        }
-
-        offset += 8 + chunk_size as usize; // Move to next chunk
-    }
-
-    return 0;
-}
-
-const TARGET_SAMPLE_COUNT: usize = target_sample_count() as usize;
-
-fn handle_event(event: FroskEvent) -> Result<()> {
-    match event {
-        FroskEvent::FishBite { score: _ } => {
-            let mut enigo = enigo::Enigo::new(&enigo::Settings::default())?;
-
-            // reel it in
-            enigo.key(Key::F9, Click)?;
-
-            thread::sleep(std::time::Duration::from_millis(1000));
-
-            // just spam this a few times for now
-            for _ in 0..10 {
-                enigo.key(Key::F10, Click)?;
-                thread::sleep(std::time::Duration::from_millis(200));
-            }
-
-            Ok(())
-        }
-    }
-}
 
 fn main() -> Result<()> {
     let options = eframe::NativeOptions {
@@ -80,75 +25,45 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let target: Vec<f32> = hound::WavReader::open("sounds/FishBite.wav")?
-        .samples::<i32>()
-        .map(|s| s.unwrap() as f32 / i32::MAX as f32)
-        .collect();
-    let target_norm: f32 = target.iter().map(|x| x.powi(2)).sum::<f32>();
+    // let ringbuffer = StaticRb::<f32, TARGET_SAMPLE_COUNT>::default();
+    // let (mut rb_prod, mut rb_cons) = ringbuffer.split();
+    // for _ in 0..TARGET_SAMPLE_COUNT {
+    //     rb_prod.try_push(0.0).unwrap();
+    // }
 
-    let ringbuffer = StaticRb::<f32, TARGET_SAMPLE_COUNT>::default();
-    let (mut rb_prod, mut rb_cons) = ringbuffer.split();
-    for _ in 0..TARGET_SAMPLE_COUNT {
-        rb_prod.try_push(0.0).unwrap();
-    }
+    let mut signal_processor = SignalProcessor::default();
 
     let correlations: Arc<Mutex<VecDeque<f32>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![0.0; RETENTION])));
-
     let correlations_clone = Arc::clone(&correlations);
     let events: Arc<Mutex<Vec<FroskEvent>>> = Arc::new(Mutex::new(Vec::new()));
-    let events_clone = Arc::clone(&events);
-
     let events_to_be_handled: Arc<Mutex<VecDeque<FroskEvent>>> =
         Arc::new(Mutex::new(VecDeque::new()));
 
-    let host = cpal::default_host();
-    let loopback_device = host
-        .input_devices()?
-        .find(|d| d.name().unwrap().contains("BlackHole 2ch"))
-        .unwrap();
-    let config = cpal::StreamConfig {
-        channels: 1,
-        sample_rate: cpal::SampleRate(44100),
-        buffer_size: cpal::BufferSize::Fixed(440),
-    };
-
+    let events_clone = Arc::clone(&events);
     let events_to_be_handled_clone: Arc<Mutex<VecDeque<FroskEvent>>> =
         Arc::clone(&events_to_be_handled);
-    let stream = loopback_device.build_input_stream(
-        &config,
-        move |big_chunk: &[f32], _: &_| {
-            for chunk in big_chunk.chunks(10) {
-                rb_cons.skip(chunk.len());
-                rb_prod.push_slice(chunk);
+    let audio_capture = default_audio_capture();
+    unsafe {
+        audio_capture.capture_game_audio(move |chunk| {
+            for small_chunk in chunk.chunks(10) {
+                signal_processor.process_chunk(small_chunk);
+                let correlation = signal_processor.compute_correlation();
 
-                let correlation = rb_cons
-                    .iter()
-                    .zip(target.iter())
-                    .map(|(a, b)| a * b)
-                    .sum::<f32>()
-                    / target_norm;
-
-                if correlation > 0.3 {
-                    let event = FroskEvent::FishBite { score: correlation };
+                if let Some(event) = SignalProcessor::determine_event(correlation) {
                     events_clone.lock().unwrap().push(event);
                     events_to_be_handled_clone.lock().unwrap().push_back(event);
                 }
 
                 {
+                    // put in a block here so the lock will be released immediately
                     let mut correlations = correlations_clone.lock().unwrap();
                     correlations.pop_front();
                     correlations.push_back(correlation);
                 }
             }
-        },
-        move |err| {
-            eprintln!("an error occurred on stream: {}", err);
-        },
-        None,
-    )?;
-
-    stream.play()?;
+        })?;
+    }
 
     let events_to_be_handled_clone = Arc::clone(&events_to_be_handled);
     let event_handler_thread = thread::spawn(move || loop {
@@ -156,6 +71,7 @@ fn main() -> Result<()> {
         if let Some(event) = event {
             handle_event(event).unwrap();
         }
+        thread::sleep(std::time::Duration::from_millis(50));
     });
 
     eframe::run_native(
@@ -173,11 +89,6 @@ fn main() -> Result<()> {
     event_handler_thread.join().unwrap();
 
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy)]
-enum FroskEvent {
-    FishBite { score: f32 },
 }
 
 struct MyApp {
@@ -255,49 +166,5 @@ impl eframe::App for MyApp {
                 });
             }
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_deque_slice() {
-        let mut c = VecDeque::from(vec![0.0; 20]);
-
-        for i in 1..=30 {
-            c.pop_front();
-            c.push_back(i as f32);
-        }
-
-        let (slice1, slice2) = c.as_slices();
-        let combined: Vec<f32> = slice1.iter().chain(slice2.iter()).cloned().collect();
-        assert_eq!(combined.len(), 20);
-        for i in 0..20 {
-            assert_eq!(combined[i], (i + 11) as f32);
-        }
-    }
-
-    #[test]
-    fn test_rb_slice() {
-        let rb = StaticRb::<f32, 20>::default();
-        let (mut prod, mut cons) = rb.split();
-        for _ in 0..20 {
-            prod.try_push(0.0).unwrap();
-        }
-
-        let source: Vec<f32> = (1..=30).map(|x| x as f32).collect();
-        for chunk in source.chunks(5) {
-            cons.skip(chunk.len());
-            prod.push_slice(chunk);
-        }
-
-        let (slice1, slice2) = cons.as_slices();
-        let combined: Vec<f32> = slice1.iter().chain(slice2.iter()).cloned().collect();
-        assert_eq!(combined.len(), 20);
-        for i in 0..20 {
-            assert_eq!(combined[i], (i + 11) as f32);
-        }
     }
 }
