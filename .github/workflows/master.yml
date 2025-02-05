@@ -16,7 +16,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install system deps
-      run: sudo apt-get install -y libasound2-dev
+      run: sudo apt-get install -y libasound2-dev libxdo-dev
     - name: Run Clippy
       run: cargo clippy --all-targets --all-features -- -Dclippy::all
     - name: Build
