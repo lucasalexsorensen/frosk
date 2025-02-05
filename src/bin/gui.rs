@@ -50,7 +50,7 @@ fn main() -> Result<()> {
                 signal_processor.process_chunk(small_chunk);
                 let correlation = signal_processor.compute_correlation();
 
-                if let Some(event) = SignalProcessor::determine_event(correlation) {
+                if let Some(event) = signal_processor.determine_event(correlation) {
                     events_clone.lock().unwrap().push(event);
                     events_to_be_handled_clone.lock().unwrap().push_back(event);
                 }

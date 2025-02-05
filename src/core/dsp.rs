@@ -42,6 +42,7 @@ const TARGET_SAMPLE_COUNT: usize = target_sample_count() as usize;
 pub struct SignalProcessor {
     buffer: Buffer,
     target: Target,
+    time_since_last_bite: u32,
 }
 
 impl SignalProcessor {
@@ -49,10 +50,12 @@ impl SignalProcessor {
         self.buffer.process_chunk(chunk);
     }
 
-    pub fn determine_event(correlation: f32) -> Option<FroskEvent> {
-        if correlation > 0.3 {
+    pub fn determine_event(&mut self, correlation: f32) -> Option<FroskEvent> {
+        if correlation > 0.3 && self.time_since_last_bite > 50 {
+            self.time_since_last_bite = 0;
             return Some(FroskEvent::FishBite { score: correlation });
         }
+        self.time_since_last_bite += 1;
         None
     }
 
