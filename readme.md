@@ -9,3 +9,13 @@ More specifically, it works by maintaining a buffer of the most recently capture
 ```bash
 cargo run -r --bin gui
 ```
+
+## Tests
+```bash
+cargo test
+```
+
+## Benchmarks
+```bash
+cargo bench
+```
