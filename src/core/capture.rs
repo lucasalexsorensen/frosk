@@ -254,7 +254,7 @@ pub mod windows {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub mod macos {
     use super::AudioCapture;
     use anyhow::Result;
