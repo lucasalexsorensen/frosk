@@ -1,10 +1,12 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use enigo::{Direction::Click, Key, Keyboard};
+use ringbuf::{traits::*, StaticRb};
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
+    thread,
 };
-use ringbuf::{traits::*, StaticRb};
 
 use eframe::egui::{self, Color32};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
@@ -18,14 +20,24 @@ const fn target_sample_count() -> u32 {
     let bits_per_sample = u16::from_le_bytes([data[34], data[35]]);
     let mut offset = 12;
     while offset + 8 < data.len() {
-        let chunk_id = [data[offset], data[offset + 1], data[offset + 2], data[offset + 3]];
-        let chunk_size = u32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+        let chunk_id = [
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ];
+        let chunk_size = u32::from_le_bytes([
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]);
         match chunk_id {
             [b'd', b'a', b't', b'a'] => {
                 let data_chunk_size = chunk_size;
                 let bytes_per_sample = (bits_per_sample / 8) as u32;
                 return data_chunk_size / (num_channels as u32 * bytes_per_sample);
-            },
+            }
             _ => {}
         }
 
@@ -37,9 +49,34 @@ const fn target_sample_count() -> u32 {
 
 const TARGET_SAMPLE_COUNT: usize = target_sample_count() as usize;
 
+fn handle_event(event: FroskEvent) -> Result<()> {
+    match event {
+        FroskEvent::FishBite { score: _ } => {
+            let mut enigo = enigo::Enigo::new(&enigo::Settings::default())?;
+
+            // reel it in
+            enigo.key(Key::F9, Click)?;
+
+            thread::sleep(std::time::Duration::from_millis(1000));
+
+            // just spam this a few times for now
+            for _ in 0..10 {
+                enigo.key(Key::F10, Click)?;
+                thread::sleep(std::time::Duration::from_millis(200));
+            }
+
+            Ok(())
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([650.0, 300.0]).with_always_on_top().with_position((0.0, 0.0)),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([350.0, 125.0])
+            .with_always_on_top()
+            .with_decorations(false)
+            .with_position((0.0, 350.0)),
         ..Default::default()
     };
 
@@ -58,13 +95,14 @@ fn main() -> Result<()> {
     let correlations: Arc<Mutex<VecDeque<f32>>> =
         Arc::new(Mutex::new(VecDeque::from(vec![0.0; RETENTION])));
 
-    
     let correlations_clone = Arc::clone(&correlations);
     let events: Arc<Mutex<Vec<FroskEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
 
-    let host = cpal::default_host();
+    let events_to_be_handled: Arc<Mutex<VecDeque<FroskEvent>>> =
+        Arc::new(Mutex::new(VecDeque::new()));
 
+    let host = cpal::default_host();
     let loopback_device = host
         .input_devices()?
         .find(|d| d.name().unwrap().contains("BlackHole 2ch"))
@@ -75,6 +113,8 @@ fn main() -> Result<()> {
         buffer_size: cpal::BufferSize::Fixed(440),
     };
 
+    let events_to_be_handled_clone: Arc<Mutex<VecDeque<FroskEvent>>> =
+        Arc::clone(&events_to_be_handled);
     let stream = loopback_device.build_input_stream(
         &config,
         move |big_chunk: &[f32], _: &_| {
@@ -89,9 +129,10 @@ fn main() -> Result<()> {
                     .sum::<f32>()
                     / target_norm;
 
-                if correlation > 0.75 {
-                    let mut events = events_clone.lock().unwrap();
-                    events.push(FroskEvent::FishBite { score: correlation });
+                if correlation > 0.3 {
+                    let event = FroskEvent::FishBite { score: correlation };
+                    events_clone.lock().unwrap().push(event);
+                    events_to_be_handled_clone.lock().unwrap().push_back(event);
                 }
 
                 {
@@ -109,22 +150,34 @@ fn main() -> Result<()> {
 
     stream.play()?;
 
-    let events_clone2 = Arc::clone(&events);
-    let correlations_clone2 = Arc::clone(&correlations);
+    let events_to_be_handled_clone = Arc::clone(&events_to_be_handled);
+    let event_handler_thread = thread::spawn(move || loop {
+        let event = events_to_be_handled_clone.lock().unwrap().pop_front();
+        if let Some(event) = event {
+            handle_event(event).unwrap();
+        }
+    });
 
     eframe::run_native(
         "frosk",
         options,
-        Box::new(|_cc| Ok(Box::new(MyApp::new(events_clone2, correlations_clone2)))),
+        Box::new(|_cc| {
+            Ok(Box::new(MyApp::new(
+                Arc::clone(&events),
+                Arc::clone(&correlations),
+            )))
+        }),
     )
     .unwrap();
+
+    event_handler_thread.join().unwrap();
 
     Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
 enum FroskEvent {
-    FishBite { score: f32 }
+    FishBite { score: f32 },
 }
 
 struct MyApp {
@@ -145,27 +198,30 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("events").exact_width(150.0).resizable(false).show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.heading("Events");
-            });
+        egui::SidePanel::left("events")
+            .exact_width(100.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Events");
+                });
 
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |scroll_ui| {
-                scroll_ui.spacing_mut().item_spacing.y = 4.0;
-                scroll_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |scroll_ui| {
+                        scroll_ui.spacing_mut().item_spacing.y = 4.0;
+                        scroll_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
 
-                {
-                    let events = self.events.lock().unwrap();
-                    events.iter().rev().for_each(|event| {
-                        match event {
-                            FroskEvent::FishBite { score } => {
-                                scroll_ui.label(format!("FishBite ({:.3})", score));
-                            }
+                        {
+                            let events = self.events.lock().unwrap();
+                            events.iter().rev().for_each(|event| match event {
+                                FroskEvent::FishBite { score } => {
+                                    scroll_ui.label(format!("FishBite ({:.3})", score));
+                                }
+                            });
                         }
-                    });
-                }
-            })
-        });
+                    })
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.ctx().request_repaint();
@@ -199,7 +255,6 @@ impl eframe::App for MyApp {
                 });
             }
         });
-
     }
 }
 
@@ -244,6 +299,5 @@ mod tests {
         for i in 0..20 {
             assert_eq!(combined[i], (i + 11) as f32);
         }
-        
     }
 }
