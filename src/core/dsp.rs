@@ -133,9 +133,12 @@ mod tests {
         let (slice1, slice2) = c.as_slices();
         let combined: Vec<f32> = slice1.iter().chain(slice2.iter()).cloned().collect();
         assert_eq!(combined.len(), 20);
-        for i in 0..20 {
-            assert_eq!(combined[i], (i + 11) as f32);
-        }
+        // for i in 0..20 {
+        //     assert_eq!(combined[i], (i + 11) as f32);
+        // }
+        combined.iter().take(20).enumerate().for_each(|(i, x)| {
+            assert_eq!(*x, (i + 11) as f32);
+        });
     }
 
     #[test]
@@ -155,8 +158,11 @@ mod tests {
         let (slice1, slice2) = cons.as_slices();
         let combined: Vec<f32> = slice1.iter().chain(slice2.iter()).cloned().collect();
         assert_eq!(combined.len(), 20);
-        for i in 0..20 {
-            assert_eq!(combined[i], (i + 11) as f32);
-        }
+        // for i in 0..20 {
+        //     assert_eq!(combined[i], (i + 11) as f32);
+        // }
+        combined.iter().take(20).enumerate().for_each(|(i, x)| {
+            assert_eq!(*x, (i + 11) as f32);
+        });
     }
 }
