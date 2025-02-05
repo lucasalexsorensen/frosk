@@ -1,5 +1,6 @@
 use std::{mem::MaybeUninit, sync::Arc};
 
+use cpal::FromSample;
 use ringbuf::{storage::Owning, traits::*, wrap::caching::Caching, SharedRb, StaticRb};
 
 use super::event::FroskEvent;
@@ -105,7 +106,8 @@ struct Target {
 
 impl Default for Target {
     fn default() -> Self {
-        let target: Vec<f32> = hound::WavReader::open("sounds/FishBite.wav")
+        let buf_reader = std::io::Cursor::new(TARGET_BYTES);
+        let target: Vec<f32> = hound::WavReader::new(buf_reader)
             .unwrap()
             .samples::<i32>()
             .map(|s| s.unwrap() as f32 / i32::MAX as f32)
