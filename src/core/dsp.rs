@@ -1,4 +1,3 @@
-use anyhow::Result;
 use std::{mem::MaybeUninit, sync::Arc};
 
 use ringbuf::{storage::Owning, traits::*, wrap::caching::Caching, SharedRb, StaticRb};
@@ -25,19 +24,16 @@ const fn target_sample_count() -> u32 {
             data[offset + 6],
             data[offset + 7],
         ]);
-        match chunk_id {
-            [b'd', b'a', b't', b'a'] => {
-                let data_chunk_size = chunk_size;
-                let bytes_per_sample = (bits_per_sample / 8) as u32;
-                return data_chunk_size / (num_channels as u32 * bytes_per_sample);
-            }
-            _ => {}
+        if let [b'd', b'a', b't', b'a'] = chunk_id {
+            let data_chunk_size = chunk_size;
+            let bytes_per_sample = (bits_per_sample / 8) as u32;
+            return data_chunk_size / (num_channels as u32 * bytes_per_sample);
         }
 
         offset += 8 + chunk_size as usize; // Move to next chunk
     }
 
-    return 0;
+    0
 }
 
 const TARGET_SAMPLE_COUNT: usize = target_sample_count() as usize;
@@ -71,9 +67,14 @@ impl SignalProcessor {
     }
 }
 
+// TODO: find a nicer way to express this
+type RbProdType =
+    Caching<Arc<SharedRb<Owning<[MaybeUninit<f32>; TARGET_SAMPLE_COUNT]>>>, true, false>;
+type RbConsType =
+    Caching<Arc<SharedRb<Owning<[MaybeUninit<f32>; TARGET_SAMPLE_COUNT]>>>, false, true>;
 struct Buffer {
-    rb_prod: Caching<Arc<SharedRb<Owning<[MaybeUninit<f32>; TARGET_SAMPLE_COUNT]>>>, true, false>,
-    rb_cons: Caching<Arc<SharedRb<Owning<[MaybeUninit<f32>; TARGET_SAMPLE_COUNT]>>>, false, true>,
+    rb_prod: RbProdType,
+    rb_cons: RbConsType,
 }
 
 impl Default for Buffer {
@@ -110,8 +111,6 @@ impl Default for Target {
         Self { target, norm }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

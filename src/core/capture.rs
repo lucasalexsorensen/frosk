@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub trait AudioCapture {
+    /// # Safety
     unsafe fn capture_game_audio(
         &self,
         callback: impl FnMut(&[f32]) + Send + 'static,
