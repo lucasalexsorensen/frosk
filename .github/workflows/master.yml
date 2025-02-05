@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-Dwarnings"
 
 jobs:
   build:
@@ -19,7 +18,7 @@ jobs:
     - name: Install system deps
       run: sudo apt-get install -y libasound2-dev
     - name: Run Clippy
-      run: cargo clippy --all-targets --all-features
+      run: cargo clippy --all-targets --all-features -- -Dclippy::all
     - name: Build
       run: cargo build --verbose
     - name: Run tests

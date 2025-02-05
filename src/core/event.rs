@@ -2,7 +2,6 @@ use anyhow::Result;
 use enigo::{Direction::Click, Key, Keyboard};
 use std::thread;
 
-
 #[derive(Debug, Clone, Copy)]
 pub enum FroskEvent {
     FishBite { score: f32 },

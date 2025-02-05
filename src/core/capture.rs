@@ -11,18 +11,17 @@ pub trait AudioCapture {
 pub fn default_audio_capture() -> impl AudioCapture {
     #[cfg(target_os = "windows")]
     {
-        return windows::WindowsCapturer::default();
+        windows::WindowsCapturer::default()
     }
     #[cfg(target_os = "macos")]
     {
-        return macos::MacOsCapturer::default();
+        macos::MacOsCapturer::default()
     }
     #[cfg(target_os = "linux")]
     {
         // just use the macos capturer for now
-        return macos::MacOsCapturer::default();
+        macos::MacOsCapturer::default()
     }
-    panic!("Unsupported OS");
 }
 
 #[cfg(target_os = "windows")]
@@ -89,10 +88,7 @@ pub mod windows {
     struct WindowsCapturer {}
 
     impl AudioCapture for WindowsCapturer {
-        unsafe fn capture_game_audio(
-            &self,
-            mut callback: impl FnMut(&[f32]) -> (),
-        ) -> Result<()> {
+        unsafe fn capture_game_audio(&self, mut callback: impl FnMut(&[f32]) -> ()) -> Result<()> {
             let n_channels = 1;
             let bits_per_sample = 32;
             let sample_rate = 44100;

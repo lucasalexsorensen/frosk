@@ -1,7 +1,5 @@
-use std::{mem::MaybeUninit, sync::Arc};
-
-use cpal::FromSample;
 use ringbuf::{storage::Owning, traits::*, wrap::caching::Caching, SharedRb, StaticRb};
+use std::{mem::MaybeUninit, sync::Arc};
 
 use super::event::FroskEvent;
 

@@ -9,9 +9,10 @@ use std::{
 use eframe::egui::{self, Color32};
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use frosk::core::{
-    capture::{default_audio_capture, AudioCapture}, dsp::SignalProcessor, event::{handle_event, FroskEvent}
+    capture::{default_audio_capture, AudioCapture},
+    dsp::SignalProcessor,
+    event::{handle_event, FroskEvent},
 };
-
 
 const RETENTION: usize = 8000;
 

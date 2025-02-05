@@ -1,4 +1,4 @@
-pub mod process;
 pub mod capture;
-pub mod event;
 pub mod dsp;
+pub mod event;
+pub mod process;

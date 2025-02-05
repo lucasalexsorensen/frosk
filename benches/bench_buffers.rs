@@ -1,8 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rand::prelude::*;
+use ringbuf::{traits::*, HeapRb, StaticRb};
 use std::collections::VecDeque;
-use ringbuf::{traits::*, StaticRb, HeapRb};
-
 
 const N: usize = 1_000_000;
 const B: usize = 100_000;
@@ -15,23 +14,27 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let source_slice = source.as_slice();
 
     let mut buffer = VecDeque::from(vec![0.0; B]);
-    c.bench_function("VecDeque", |b| b.iter(|| {
-        source_slice.chunks(C).for_each(|chunk| {
-            chunk.iter().for_each(|value| {
-                buffer.pop_front();
-                buffer.push_back(*value);
+    c.bench_function("VecDeque", |b| {
+        b.iter(|| {
+            source_slice.chunks(C).for_each(|chunk| {
+                chunk.iter().for_each(|value| {
+                    buffer.pop_front();
+                    buffer.push_back(*value);
+                });
             });
-        });
-    }));
+        })
+    });
 
     let mut buffer = StaticRb::<f32, B>::default();
     let (mut prod, mut cons) = buffer.split_ref();
-    c.bench_function("StaticRb", |b| b.iter(|| {
-        source_slice.chunks(C).for_each(|chunk| {
-            cons.skip(chunk.len());
-            prod.push_slice(chunk);
-        });
-    }));
+    c.bench_function("StaticRb", |b| {
+        b.iter(|| {
+            source_slice.chunks(C).for_each(|chunk| {
+                cons.skip(chunk.len());
+                prod.push_slice(chunk);
+            });
+        })
+    });
 
     let mut buffer = HeapRb::<f32>::new(B);
     let (mut prod, mut cons) = buffer.split_ref();
@@ -40,13 +43,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         prod.try_push(0.0).unwrap();
     }
 
-    c.bench_function("HeapRb", |b| b.iter(|| {
-        source_slice.chunks(C).for_each(|chunk| {
-            cons.skip(chunk.len());
-            prod.push_slice(chunk);
-        });
-    }));
-
+    c.bench_function("HeapRb", |b| {
+        b.iter(|| {
+            source_slice.chunks(C).for_each(|chunk| {
+                cons.skip(chunk.len());
+                prod.push_slice(chunk);
+            });
+        })
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);
