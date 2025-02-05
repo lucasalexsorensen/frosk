@@ -11,16 +11,18 @@ pub trait AudioCapture {
 pub fn default_audio_capture() -> impl AudioCapture {
     #[cfg(target_os = "windows")]
     {
-        windows::WindowsCapturer::default()
+        return windows::WindowsCapturer::default();
     }
     #[cfg(target_os = "macos")]
     {
-        macos::MacOsCapturer::default()
+        return macos::MacOsCapturer::default();
     }
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "linux")]
     {
-        panic!("Unsupported OS");
+        // just use the macos capturer for now
+        return macos::MacOsCapturer::default();
     }
+    panic!("Unsupported OS");
 }
 
 #[cfg(target_os = "windows")]
