@@ -11,7 +11,13 @@ Todo list:
 - [ ] Add a GUI for configuring stuff like which hotkeys to use, etc.
 
 ## Pre-requisites
-It requires you to have specific settings configured in the game:
+I'm still working out some kinks here, so this will likely change.
+
+System requirements:
+* Install the [BlackHole](https://github.com/ExistentialAudio/BlackHole) audio loopback driver (2ch)
+
+In-game settings:
+* Output game audio to `BlackHole 2ch`, and make sure sound effects are enabled and cranked to 100%
 * Interact with target: `F9`
 * Hotkey for fishing: `F10`
 
